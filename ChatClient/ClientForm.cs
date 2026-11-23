@@ -1,6 +1,7 @@
 using ChatApp.Core.Models;
 using ChatApp.Core.Network;
 using ChatApp.Core.Protocol;
+using ChatApp.Core.Services;
 using ChatClient.Controls;
 
 namespace ChatClient;
@@ -25,8 +26,10 @@ public class ClientForm : Form
     private readonly MessageListBox lstMessages = new();
     private readonly GroupBox grpUsers = new();
     private readonly ListBox lstUsers = new();
+    private readonly Button btnSaveHistory = new();
 
     // --- Mesaj yazma ---
+    private readonly CheckBox chkPrivate = new();
     private readonly TextBox txtMessage = new();
     private readonly Button btnSend = new();
     private readonly Label lblCharCount = new();
@@ -104,7 +107,13 @@ public class ClientForm : Form
         btnSend.Width = 100;
         btnSend.Click += BtnSend_Click;
 
+        // Ozel mesaj secenegi: isaretliyse mesaj yalnizca listede secili kullaniciya gider
+        chkPrivate.Dock = DockStyle.Left;
+        chkPrivate.Width = 150;
+        chkPrivate.CheckedChanged += (_, _) => UpdatePrivateTarget();
+
         bottom.Controls.Add(txtMessage);
+        bottom.Controls.Add(chkPrivate);
         bottom.Controls.Add(lblCharCount);
         bottom.Controls.Add(btnSend);
 
@@ -115,11 +124,29 @@ public class ClientForm : Form
 
         lstUsers.Dock = DockStyle.Fill;
         lstUsers.IntegralHeight = false;
+        lstUsers.SelectedIndexChanged += (_, _) => UpdatePrivateTarget();
+        lstUsers.DoubleClick += LstUsers_DoubleClick;
+
+        btnSaveHistory.Text = "Gecmisi Kaydet (.txt)";
+        btnSaveHistory.Dock = DockStyle.Bottom;
+        btnSaveHistory.Height = 32;
+        btnSaveHistory.Click += BtnSaveHistory_Click;
+
+        var lblHint = new Label
+        {
+            Text = "Ozel mesaj icin kullaniciya cift tiklayin.",
+            Dock = DockStyle.Bottom,
+            Height = 38,
+            ForeColor = Color.DimGray
+        };
+
         grpUsers.Text = "Cevrimici (0)";
         grpUsers.Dock = DockStyle.Right;
         grpUsers.Width = 190;
         grpUsers.Padding = new Padding(8);
         grpUsers.Controls.Add(lstUsers);
+        grpUsers.Controls.Add(lblHint);
+        grpUsers.Controls.Add(btnSaveHistory);
 
         var middle = new Panel { Dock = DockStyle.Fill, Padding = new Padding(8, 0, 8, 0) };
         middle.Controls.Add(grpMessages);
@@ -137,7 +164,11 @@ public class ClientForm : Form
 
     private void WireClientEvents()
     {
-        _client.PacketReceived += (_, packet) => RunOnUi(() => lstMessages.AddMessage(packet));
+        _client.PacketReceived += (_, packet) => RunOnUi(() =>
+        {
+            lstMessages.AddMessage(packet);
+            btnSaveHistory.Enabled = true;
+        });
         _client.UserListReceived += (_, users) => RunOnUi(() => UpdateUserList(users));
         _client.Disconnected += (_, reason) => RunOnUi(() =>
         {
@@ -226,7 +257,10 @@ public class ClientForm : Form
 
         try
         {
-            await _client.SendMessageAsync(txtMessage.Text);
+            if (chkPrivate.Checked)
+                await _client.SendPrivateMessageAsync(SelectedUser ?? string.Empty, txtMessage.Text);
+            else
+                await _client.SendMessageAsync(txtMessage.Text);
             txtMessage.Clear();
         }
         catch (ChatException ex)
@@ -234,6 +268,45 @@ public class ClientForm : Form
             MessageBox.Show(ex.Message, "Mesaj gonderilemedi", MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
         txtMessage.Focus();
+    }
+
+    private void LstUsers_DoubleClick(object? sender, EventArgs e)
+    {
+        if (SelectedUser is null)
+            return;
+        if (SelectedUser.Equals(_client.UserName, StringComparison.OrdinalIgnoreCase))
+        {
+            MessageBox.Show("Kendinize ozel mesaj gonderemezsiniz.", "Bilgi",
+                MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+        chkPrivate.Checked = true;
+        txtMessage.Focus();
+    }
+
+    private async void BtnSaveHistory_Click(object? sender, EventArgs e)
+    {
+        using var dialog = new SaveFileDialog
+        {
+            Title = "Sohbet gecmisini kaydet",
+            Filter = "Metin dosyasi (*.txt)|*.txt",
+            FileName = ChatHistoryService.CreateDefaultFileName("sohbet_gecmisi")
+        };
+        if (dialog.ShowDialog(this) != DialogResult.OK)
+            return;
+
+        try
+        {
+            string title = $"YMH219 Sohbet Gecmisi - {_client.UserName ?? txtUserName.Text}";
+            int count = await ChatHistoryService.SaveAsync(dialog.FileName, title,
+                lstMessages.Messages.Select(m => m.ToDisplayString()));
+            MessageBox.Show($"{count} mesaj kaydedildi:\n{dialog.FileName}", "Kaydedildi",
+                MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+        catch (ChatException ex)
+        {
+            MessageBox.Show(ex.Message, "Kaydedilemedi", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
     }
 
     private void ClientForm_FormClosing(object? sender, FormClosingEventArgs e)
@@ -252,14 +325,40 @@ public class ClientForm : Form
 
     // ================= Yardimci metotlar =================
 
+    /// <summary>Kullanici listesinde secili kullanici adi.</summary>
+    private string? SelectedUser => lstUsers.SelectedItem as string;
+
     private void UpdateUserList(IReadOnlyList<string> users)
     {
+        string? previous = SelectedUser;
         lstUsers.BeginUpdate();
         lstUsers.Items.Clear();
         foreach (string user in users)
             lstUsers.Items.Add(user);
+        if (previous is not null && lstUsers.Items.Contains(previous))
+            lstUsers.SelectedItem = previous;
         lstUsers.EndUpdate();
         grpUsers.Text = $"Cevrimici ({users.Count})";
+        UpdatePrivateTarget();
+    }
+
+    /// <summary>
+    /// Ozel mesaj kutusunun metnini secili aliciya gore gunceller; alici yoksa ozel modu kapatir.
+    /// </summary>
+    private void UpdatePrivateTarget()
+    {
+        string? target = SelectedUser;
+        bool validTarget = target is not null &&
+                           !target.Equals(_client.UserName, StringComparison.OrdinalIgnoreCase);
+
+        if (chkPrivate.Checked && !validTarget)
+            chkPrivate.Checked = false; // CheckedChanged bu metodu tekrar cagirir
+
+        chkPrivate.Text = validTarget ? $"Ozel: {target}" : "Ozel mesaj";
+        chkPrivate.Enabled = _client.IsConnected && validTarget;
+        txtMessage.PlaceholderText = chkPrivate.Checked
+            ? $"{target} kullanicisina ozel mesaj yazin..."
+            : "Mesajinizi yazin ve Enter'a basin...";
     }
 
     private void UpdateCharCount() =>
@@ -277,6 +376,8 @@ public class ClientForm : Form
         btnDisconnect.Enabled = connected;
         txtMessage.Enabled = connected;
         btnSend.Enabled = connected;
+        btnSaveHistory.Enabled = lstMessages.Items.Count > 0;
+        UpdatePrivateTarget();
 
         if (_busy)
             return;

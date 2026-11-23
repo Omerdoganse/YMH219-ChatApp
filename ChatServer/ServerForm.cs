@@ -3,6 +3,7 @@ using System.Net.Sockets;
 using ChatApp.Core.Models;
 using ChatApp.Core.Network;
 using ChatApp.Core.Protocol;
+using ChatApp.Core.Services;
 
 namespace ChatServer;
 
@@ -20,6 +21,7 @@ public class ServerForm : Form
     private readonly Button btnStop = new();
     private readonly Label lblStatus = new();
     private readonly Label lblAddresses = new();
+    private readonly Button btnSaveLog = new();
 
     // --- Istemci listesi ---
     private readonly GroupBox grpClients = new();
@@ -53,7 +55,7 @@ public class ServerForm : Form
     private void BuildLayout()
     {
         // Ust panel: port, baslat/durdur, durum
-        var top = new Panel { Dock = DockStyle.Top, Height = 78, Padding = new Padding(10, 8, 10, 4) };
+        var top = new Panel { Dock = DockStyle.Top, Width = ClientSize.Width, Height = 78, Padding = new Padding(10, 8, 10, 4) };
 
         var lblPort = new Label { Text = "Port:", AutoSize = true, Location = new Point(12, 16) };
         numPort.SetBounds(52, 12, 80, 27);
@@ -78,7 +80,12 @@ public class ServerForm : Form
         lblAddresses.Location = new Point(12, 50);
         lblAddresses.Text = "Bu bilgisayarin adresleri: " + GetLocalAddresses();
 
-        top.Controls.AddRange([lblPort, numPort, btnStart, btnStop, lblStatus, lblAddresses]);
+        btnSaveLog.Text = "Gunlugu Kaydet (.txt)";
+        btnSaveLog.SetBounds(ClientSize.Width - 180, 10, 168, 32);
+        btnSaveLog.Anchor = AnchorStyles.Top | AnchorStyles.Right;
+        btnSaveLog.Click += BtnSaveLog_Click;
+
+        top.Controls.AddRange([lblPort, numPort, btnStart, btnStop, lblStatus, lblAddresses, btnSaveLog]);
 
         // Sol: bagli istemciler
         lvClients.Dock = DockStyle.Fill;
@@ -243,6 +250,30 @@ public class ServerForm : Form
         catch (ChatException ex)
         {
             MessageBox.Show(ex.Message, "Duyuru gonderilemedi", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+    }
+
+    private async void BtnSaveLog_Click(object? sender, EventArgs e)
+    {
+        using var dialog = new SaveFileDialog
+        {
+            Title = "Sunucu gunlugunu kaydet",
+            Filter = "Metin dosyasi (*.txt)|*.txt",
+            FileName = ChatHistoryService.CreateDefaultFileName("sunucu_gunlugu")
+        };
+        if (dialog.ShowDialog(this) != DialogResult.OK)
+            return;
+
+        try
+        {
+            int count = await ChatHistoryService.SaveAsync(dialog.FileName, "YMH219 Sohbet Sunucusu Gunlugu",
+                lstLog.Items.Cast<string>());
+            MessageBox.Show($"{count} satir kaydedildi:\n{dialog.FileName}", "Kaydedildi",
+                MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+        catch (ChatException ex)
+        {
+            MessageBox.Show(ex.Message, "Kaydedilemedi", MessageBoxButtons.OK, MessageBoxIcon.Warning);
         }
     }
 
